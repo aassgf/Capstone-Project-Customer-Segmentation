@@ -6,20 +6,34 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.express as px
-from io import StringIO, BytesIO
+from io import BytesIO
+import os
 
-st.set_page_config(layout="wide", page_title="RFM Clusters Dashboard")
+st.set_page_config(layout="wide", page_title="RFM Clusters - Auto Load", initial_sidebar_state="collapsed")
 
 # ---------------------------
 # Helper functions
 # ---------------------------
 @st.cache_data
-def load_csv(uploaded_file):
-    try:
-        return pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"Error membaca CSV: {e}")
-        return pd.DataFrame()
+def load_local_csv():
+    """Cari file CSV hasil clustering di working dir; jika tidak ada, kembalikan None."""
+    candidates = [
+        "rfm_results.csv",
+        "non_outliers_df.csv",
+        "outlier_clusters_df.csv",
+        "rfm_filtered.csv",
+        "rfm_upload_format.csv",
+        "data.csv"
+    ]
+    for fname in candidates:
+        if os.path.exists(fname):
+            try:
+                df = pd.read_csv(fname)
+                return df, fname
+            except Exception:
+                # jika gagal baca, lanjutkan cari file lain
+                continue
+    return None, None
 
 def clean_rfm_df(df):
     df = df.copy()
@@ -66,13 +80,8 @@ def download_df_as_csv(df):
     return buf
 
 # ---------------------------
-# UI: Sidebar
+# Base palette & cluster descriptions
 # ---------------------------
-st.sidebar.title("Pengaturan Data")
-uploaded = st.sidebar.file_uploader("Upload CSV RFM (opsional)", type=['csv'])
-use_example = st.sidebar.checkbox("Gunakan contoh dummy (jika tidak upload)", value=False)
-
-# base palette sesuai yg kamu inginkan
 base_cluster_colors = {
     0: '#1f77b4',  # Blue - Retain
     1: '#ff7f0e',  # Orange - Re-Engage
@@ -80,92 +89,80 @@ base_cluster_colors = {
     3: '#d62728'   # Red - Reward
 }
 
+cluster_texts = {
+    0: ("Retain", "Pelanggan bernilai tinggi. Fokus mempertahankan melalui loyalitas & personalisasi."),
+    1: ("Re-Engage", "Pelanggan kurang aktif. Kirim kampanye & diskon untuk mengaktifkan kembali."),
+    2: ("Nurture", "Pelanggan baru/berpotensi. Bangun hubungan & tawarkan insentif."),
+    3: ("Reward", "Pelanggan paling loyal. Beri reward & akses eksklusif.")
+}
+
 # ---------------------------
-# Data loading
+# Load data (automatic)
 # ---------------------------
-if uploaded is not None:
-    df_raw = load_csv(uploaded)
-elif use_example:
-    # create small example
+df_found, fname = load_local_csv()
+if df_found is None:
+    # buat contoh dummy jika file tidak ditemukan
     rng = np.random.default_rng(42)
     n = 300
-    df_raw = pd.DataFrame({
+    df_found = pd.DataFrame({
         'Cluster': rng.integers(0, 4, size=n),
         'MonetaryValue': np.abs(rng.normal(200, 120, size=n)).round(2),
         'Frequency': np.abs(rng.normal(5, 3, size=n)).round(0),
         'Recency': np.abs(rng.normal(60, 45, size=n)).round(0)
     })
+    info_source = "generated dummy data (tidak ada file CSV ditemukan)"
 else:
-    st.info("Upload CSV yang berisi kolom: Cluster, MonetaryValue, Frequency, Recency — atau centang 'Gunakan contoh dummy'.")
-    df_raw = pd.DataFrame()  # empty
+    info_source = f"loaded from local file: {fname}"
 
-if df_raw.empty:
-    st.stop()
+df = clean_rfm_df(df_found)
 
-df = clean_rfm_df(df_raw)
-
-# Sidebar filters
-st.sidebar.markdown("### Filter")
-all_clusters = sorted(df['Cluster'].unique())
-selected_clusters = st.sidebar.multiselect("Pilih cluster", options=all_clusters, default=all_clusters)
-mv_min, mv_max = float(df['MonetaryValue'].min()), float(df['MonetaryValue'].max())
-freq_min, freq_max = float(df['Frequency'].min()), float(df['Frequency'].max())
-rec_min, rec_max = float(df['Recency'].min()), float(df['Recency'].max())
-
-mv_range = st.sidebar.slider("MonetaryValue range", mv_min, mv_max, (mv_min, mv_max))
-freq_range = st.sidebar.slider("Frequency range", freq_min, freq_max, (freq_min, freq_max))
-rec_range = st.sidebar.slider("Recency range (days)", rec_min, rec_max, (rec_min, rec_max))
-
-# Apply filters
-df_filtered = df[
-    (df['Cluster'].isin(selected_clusters)) &
-    (df['MonetaryValue'] >= mv_range[0]) & (df['MonetaryValue'] <= mv_range[1]) &
-    (df['Frequency'] >= freq_range[0]) & (df['Frequency'] <= freq_range[1]) &
-    (df['Recency'] >= rec_range[0]) & (df['Recency'] <= rec_range[1])
-].copy()
-
-st.sidebar.markdown("---")
-if st.sidebar.button("Reset filter"):
-    st.experimental_rerun()
+# Jika setelah pembersihan kosong, pakai dummy fallback
+if df.shape[0] == 0:
+    rng = np.random.default_rng(42)
+    n = 200
+    df = pd.DataFrame({
+        'Cluster': rng.integers(0, 4, size=n),
+        'MonetaryValue': np.abs(rng.normal(200, 120, size=n)).round(2),
+        'Frequency': np.abs(rng.normal(5, 3, size=n)).round(0),
+        'Recency': np.abs(rng.normal(60, 45, size=n)).round(0)
+    })
+    info_source = "fallback dummy data (data asli kosong setelah pembersihan)"
 
 # ---------------------------
-# Build palette for present clusters
-# ---------------------------
-palette = build_palette(sorted(df_filtered['Cluster'].unique()), base_colors=base_cluster_colors)
-
-# ---------------------------
-# Main layout
+# Page layout (no upload)
 # ---------------------------
 st.title("Dashboard Segmentasi Pelanggan (RFM + Clustering)")
-c1, c2 = st.columns([2, 1])
+st.caption(f"Sumber data: {info_source}")
 
+# Build palette
+palette = build_palette(sorted(df['Cluster'].unique()), base_colors=base_cluster_colors)
+
+# Controls (simple): pilih cluster yang mau ditampilkan
+all_clusters = sorted(df['Cluster'].unique())
+selected_clusters = st.multiselect("Filter cluster (kosong = semua)", options=all_clusters, default=all_clusters)
+
+df_filtered = df[df['Cluster'].isin(selected_clusters)].copy() if selected_clusters else df.copy()
+
+# Show data summary & download
+c1, c2 = st.columns([2,1])
 with c1:
     st.subheader("Ringkasan Data")
-    st.write(f"Total baris (sebelum filter): {len(df)}")
-    st.write(f"Total baris (setelah filter): {len(df_filtered)}")
-    st.dataframe(df_filtered.head(10))
-
+    st.write(f"Total baris: {len(df_filtered)}")
+    st.dataframe(df_filtered.head(20))
 with c2:
-    st.subheader("Deskripsi Cluster")
-    st.markdown("""
-    **Cluster 0 (Biru): Retain**  
-    Fokus: menjaga pelanggan bernilai tinggi agar tetap aktif.  
-    **Cluster 1 (Oranye): Re-Engage**  
-    Fokus: mengaktifkan kembali pelanggan kurang aktif.  
-    **Cluster 2 (Hijau): Nurture**  
-    Fokus: mengembangkan pelanggan baru/berpotensi.  
-    **Cluster 3 (Merah): Reward**  
-    Fokus: beri reward pada pelanggan paling loyal.
-    """)
+    st.subheader("Deskripsi Cluster & Download")
+    for k in sorted(df_filtered['Cluster'].unique()):
+        title, desc = cluster_texts.get(int(k), (f"Cluster {k}", "Deskripsi tidak tersedia"))
+        st.write(f"**Cluster {int(k)} — {title}**")
+        st.write(desc)
     buf = download_df_as_csv(df_filtered)
-    st.download_button("Unduh data filter (CSV)", data=buf, file_name="rfm_filtered.csv", mime="text/csv")
+    st.download_button("Unduh data (CSV)", data=buf, file_name="rfm_shown.csv", mime="text/csv")
 
 # ---------------------------
-# Violin plots (matplotlib + seaborn) — R/F/M by cluster
+# Violin plots (matplotlib + seaborn)
 # ---------------------------
-st.markdown("## Visualisasi Distribusi RFM per Cluster")
+st.markdown("## Distribusi RFM per Cluster")
 fig = plt.figure(figsize=(12, 16))
-
 order = sorted(df_filtered['Cluster'].unique())
 
 # Monetary
@@ -200,7 +197,6 @@ st.pyplot(fig)
 # ---------------------------
 st.markdown("## Scatter 3D Interaktif (Monetary, Frequency, Recency)")
 if len(df_filtered) > 0:
-    # map colors for plotly
     color_map = {str(k): v for k, v in palette.items()}
     df_plot = df_filtered.copy()
     df_plot['Cluster_str'] = df_plot['Cluster'].astype(str)
@@ -222,13 +218,8 @@ else:
 # Cluster summary cards
 # ---------------------------
 st.markdown("## Insight & Rekomendasi per Cluster")
-cols = st.columns(len(order) if len(order)>0 else 1)
-cluster_texts = {
-    0: ("Retain", "Pelanggan bernilai tinggi. Fokus mempertahankan melalui loyalitas & personalisasi."),
-    1: ("Re-Engage", "Pelanggan kurang aktif. Kirim kampanye & diskon untuk mengaktifkan kembali."),
-    2: ("Nurture", "Pelanggan baru/berpotensi. Bangun hubungan & tawarkan insentif."),
-    3: ("Reward", "Pelanggan paling loyal. Beri reward & akses eksklusif.")
-}
+order = order if len(order)>0 else [0]
+cols = st.columns(len(order))
 for i, c in enumerate(order):
     with cols[i]:
         title, desc = cluster_texts.get(int(c), (f"Cluster {c}", "Deskripsi tidak tersedia"))
@@ -236,6 +227,4 @@ for i, c in enumerate(order):
         st.write(desc)
 
 st.markdown("---")
-st.write("Aplikasi ini bisa disesuaikan lagi: tambah chart KPI (LTV, churn rate), segmentasi lebih lanjut, atau koneksi DB.")
-
-print("Hello Streamlit!")
+st.write("Catatan: aplikasi ini otomatis memuat file CSV jika tersedia di working directory, atau menggunakan contoh dummy bila tidak ada file.")
